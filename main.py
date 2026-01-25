@@ -1,93 +1,116 @@
 import asyncio
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-# Твой токен уже на месте
-API_TOKEN = '8423588142:AAG18DOaJzwixZZyDiTJInu0dKBTV20u3lQ'
+# --- КОНФИГУРАЦИЯ ---
+ADMIN_ID = 7173827114
+TOKEN_ORDERS = "8302935804:AAGmtbJb07m3vEJJNEXi6x0to2KMnQfn0VI" # Бот для юзеров
+TOKEN_REMOTE = "8243825486:AAE4muYvMmbWsWBrZDhCWrOw0glgEKlzlWw" # Бот-пульт
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+bot_orders = Bot(token=TOKEN_ORDERS)
+bot_remote = Bot(token=TOKEN_REMOTE)
 
-# 1. Стартовое сообщение
-@dp.message(Command("start"))
+dp_orders = Dispatcher()
+dp_remote = Dispatcher()
+
+# Состояние магазина и статистика
+app_state = {"is_open": True, "users": set()}
+
+# --- ЛОГИКА БОТА ЗАКАЗОВ ---
+
+@dp_orders.message(Command("start"))
 async def cmd_start(message: types.Message):
+    app_state["users"].add(message.from_user.id)
+    if not app_state["is_open"]:
+        return await message.answer("🚧 Магазин временно закрыт администратором.")
+    
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🔹 Каталог", callback_data="show_catalog"))
-    
-    await message.answer(
-        "Привет, рады тебя видеть. Это Десяточка — магазин в лагере!",
-        reply_markup=builder.as_markup()
-    )
+    await message.answer("Привет! Это Десяточка — магазин в лагере!", reply_markup=builder.as_markup())
 
-# 2. Вывод каталога
-@dp.callback_query(F.data == "show_catalog")
+@dp_orders.callback_query(F.data == "show_catalog")
 async def show_catalog(callback: types.CallbackQuery):
-    catalog_text = (
-        "**Каталог товаров:**\n\n"
-        "*1. Соль*\n°Малая пачка — 1 купон\n°Средняя пачка — 2 купона\n°Большая пачка — 3 купона\n(Товар является эксклюзивом)\n\n"
-        "*2. Хлеб*\n°1 Хлеб — 3 купона\n(Товар является эксклюзивом)\n\n"
-        "*3. Вода*\n°Бутылка воды \"Тайный жемчуг\" — 3 купона\n\n"
-        "*4. Сок*\n°1 пачка — 2 купона"
-    )
+    if not app_state["is_open"]:
+        return await callback.answer("Магазин закрыт!", show_alert=True)
     
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="Заказать", callback_data="first_order_click"))
-    
-    await callback.message.answer(catalog_text, parse_mode="Markdown", reply_markup=builder.as_markup())
-    await callback.answer()
-
-# 3. Первое нажатие на "Заказать" (Отказ)
-@dp.callback_query(F.data == "first_order_click")
-async def store_closed(callback: types.CallbackQuery):
+    catalog_text = "**Каталог товаров:**\n\n1. Соль\n2. Хлеб\n3. Вода\n4. Сок"
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="Заказать", callback_data="open_menu"))
-    
-    await callback.message.answer(
-        "ОЙ! Наш магазин закрыт до лета, да и все же мне не разрешили делать для самого магазина бота, так что вот так!",
-        reply_markup=builder.as_markup()
-    )
-    await callback.answer()
+    await callback.message.answer(catalog_text, parse_mode="Markdown", reply_markup=builder.as_markup())
 
-# 4. Второе нажатие на "Заказать" (Выбор продуктов)
-@dp.callback_query(F.data == "open_menu")
+@dp_orders.callback_query(F.data == "open_menu")
 async def choose_item(callback: types.CallbackQuery):
     builder = ReplyKeyboardBuilder()
-    # Кнопки в формате "Продукт — Цена"
     items = ["Соль (М) — 1", "Соль (С) — 2", "Соль (Б) — 3", "Хлеб — 3", "Вода — 3", "Сок — 2"]
     for item in items:
         builder.add(types.KeyboardButton(text=item))
-    builder.adjust(2) # Кнопки в два столбика
-    
-    await callback.message.answer("Что вы хотите заказать из списка?", reply_markup=builder.as_markup(resize_keyboard=True))
-    await callback.answer()
+    builder.adjust(2)
+    await callback.message.answer("Что вы хотите заказать?", reply_markup=builder.as_markup(resize_keyboard=True))
 
-# 5. Подтверждение купонов
-@dp.message(F.text)
-async def confirm_coupons(message: types.Message):
-    # Если пользователь выбрал что-то из меню
-    if "—" in message.text:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Подтвердить", callback_data="final_processing"))
-        await message.answer("Подтвердите, что у вас есть столько купонов, чтобы хватило", reply_markup=builder.as_markup())
-
-# 6. Финальная обработка (5 секунд)
-@dp.callback_query(F.data == "final_processing")
-async def processing(callback: types.CallbackQuery):
-    await callback.message.answer("Ваш заказ обрабатывается...")
-    await asyncio.sleep(5) # Ждем 5 секунд
+@dp_orders.message(F.text.contains("—"))
+async def confirm_order(message: types.Message):
+    if not app_state["is_open"]: return
     
-    final_text = (
-        "Ваш заказ зарегистрирован в ожидание, как только будет лето вы можете приехать в: "
-        "Город Тында, лагерь Надежда, комната 311.\n\n"
-        "Удачного ожидания! Благодарим за заказ!"
+    item = message.text
+    builder = InlineKeyboardBuilder()
+    # Кодируем товар в callback_data
+    builder.row(types.InlineKeyboardButton(text="Подтвердить", callback_data=f"buy_{item[:20]}"))
+    await message.answer(f"Подтвердите заказ: {item}", reply_markup=builder.as_markup())
+
+@dp_orders.callback_query(F.data.startswith("buy_"))
+async def final_step(callback: types.CallbackQuery):
+    item = callback.data.split("_")[1]
+    user = callback.from_user
+    dt_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # УВЕДОМЛЕНИЕ В ПУЛЬТ (Сборщику)
+    report = (
+        f"📦 **НОВЫЙ ЗАКАЗ**\n"
+        f"👤 Ник: @{user.username or 'нет'}\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"🛒 Товар: {item}\n"
+        f"⏰ Время: {dt_now}"
     )
-    await callback.message.answer(final_text, reply_markup=types.ReplyKeyboardRemove())
-    await callback.answer()
+    await bot_remote.send_message(ADMIN_ID, report, parse_mode="Markdown")
+    
+    await callback.message.answer("Заказ принят! Ждем тебя летом в 311 комнате.", reply_markup=types.ReplyKeyboardRemove())
 
+# --- ЛОГИКА БОТА-ПУЛЬТА ---
+
+@dp_remote.message(Command("start"), F.from_user.id == ADMIN_ID)
+async def admin_panel(message: types.Message):
+    builder = ReplyKeyboardBuilder()
+    builder.add(types.KeyboardButton(text="📊 Статистика"))
+    builder.add(types.KeyboardButton(text="🟢 Включить магазин"))
+    builder.add(types.KeyboardButton(text="🔴 Выключить магазин"))
+    builder.adjust(1)
+    await message.answer("🕹 Пульт управления магазином", reply_markup=builder.as_markup(resize_keyboard=True))
+
+@dp_remote.message(F.text == "📊 Статистика", F.from_user.id == ADMIN_ID)
+async def stats(message: types.Message):
+    count = len(app_state["users"])
+    status = "РАБОТАЕТ" if app_state["is_open"] else "ЗАКРЫТ"
+    await message.answer(f"📈 Статистика:\n- Уникальных юзеров: {count}\n- Статус: {status}")
+
+@dp_remote.message(F.text == "🟢 Включить магазин", F.from_user.id == ADMIN_ID)
+async def shop_on(message: types.Message):
+    app_state["is_open"] = True
+    await message.answer("✅ Магазин открыт для заказов!")
+
+@dp_remote.message(F.text == "🔴 Выключить магазин", F.from_user.id == ADMIN_ID)
+async def shop_off(message: types.Message):
+    app_state["is_open"] = False
+    await message.answer("❌ Магазин закрыт (пользователи увидят заглушку).")
+
+# --- ЗАПУСК ОБОИХ БОТОВ ---
 async def main():
-    print("Бот запущен и ждет заказов!")
-    await dp.start_polling(bot)
+    print("Система запущена: Пульт и Заказы работают...")
+    await asyncio.gather(
+        dp_orders.start_polling(bot_orders),
+        dp_remote.start_polling(bot_remote)
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
