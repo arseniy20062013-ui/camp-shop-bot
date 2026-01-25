@@ -58,28 +58,21 @@ async def choose_item(callback: types.CallbackQuery):
     builder.adjust(2)
     await callback.message.answer("Что вы хотите заказать?", reply_markup=builder.as_markup(resize_keyboard=True))
 
-# ИЗМЕНЕННАЯ ФУНКЦИЯ ЗДЕСЬ
 @dp_orders_user.message(F.text.contains("—"))
 async def confirm_order(message: types.Message):
     if not app_state["is_open"]: return
-    
     item_full_name = message.text
-    
-    # Пытаемся распарсить название и цену
     try:
         parts = item_full_name.split("—")
         item_name = parts[0].strip()
-        price_str = parts[1].strip().split()[0] # Берем только цифру
-        price = int(price_str)
+        price = parts[1].strip()
     except (ValueError, IndexError):
         item_name = item_full_name
-        price = "N/A" # В случае ошибки
+        price = "N/A"
 
     builder = InlineKeyboardBuilder()
-    # Кодируем товар в callback_data (лимит 64 байта)
     builder.row(types.InlineKeyboardButton(text="Подтвердить", callback_data=f"buy_{item_name[:20]}"))
     
-    # НОВЫЙ ТЕКСТ СООБЩЕНИЯ С ДАННЫМИ
     await message.answer(
         f"Подтвердите, что у вас есть **{price}** купонов для заказа **{item_name}**", 
         reply_markup=builder.as_markup(),
@@ -92,7 +85,7 @@ async def final_step(callback: types.CallbackQuery):
     user = callback.from_user
     dt_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # УВЕДОМЛЕНИЕ В БОТ-СБОРЩИК (COLLECTOR_NOTIFY) ТЕБЕ В ЛИЧКУ
+    # УВЕДОМЛЕНИЕ В БОТ-СБОРЩИК
     report = (
         f"📦 **НОВЫЙ ЗАКАЗ**\n"
         f"👤 Ник: @{user.username or 'нет'}\n"
@@ -102,7 +95,12 @@ async def final_step(callback: types.CallbackQuery):
     )
     await bot_collector_notify.send_message(ADMIN_ID, report, parse_mode="Markdown") 
     
-    await callback.message.answer("Ваш заказ зарегистрирован. Ждем тебя летом в 311 комнате.", reply_markup=types.ReplyKeyboardRemove())
+    # ВОТ ТВОЕ СООБЩЕНИЕ
+    final_text = (
+        "Ваш заказ зарегистрирован в ожидание. "
+        "Ждем летом Город: Тында, лагерь надежда, комната 311"
+    )
+    await callback.message.answer(final_text, reply_markup=types.ReplyKeyboardRemove())
     await callback.answer()
 
 
