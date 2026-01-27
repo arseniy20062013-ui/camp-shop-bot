@@ -20,45 +20,42 @@ BUTTONS = [
 def get_keyboard():
     builder = InlineKeyboardBuilder()
     for btn in BUTTONS:
-        # Важно: только callback_data, чтобы сработал сигнал!
+        # Мы убрали url из кнопки, чтобы бот мог поймать сигнал (callback_data)
         builder.button(
             text=f"{btn['text']} ({btn['price']})", 
-            callback_data=f"order_{btn['type']}"
+            callback_data=f"buy_{btn['type']}"
         )
     builder.adjust(1)
     return builder.as_markup()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("🛒 **Магазин услуг**\nВыберите нужный пункт:", reply_markup=get_keyboard(), parse_mode="Markdown")
+    await message.answer("👇 Выберите услугу для покупки:", reply_markup=get_keyboard())
 
-@dp.callback_query(F.data.startswith("order_"))
-async def handle_order(callback: types.CallbackQuery):
-    order_type = callback.data.replace("order_", "")
-    item = next((btn for btn in BUTTONS if btn["type"] == order_type), None)
+@dp.callback_query(F.data.startswith("buy_"))
+async def handle_buy(callback: types.CallbackQuery):
+    click_type = callback.data.replace("buy_", "")
+    item = next((btn for btn in BUTTONS if btn["type"] == click_type), None)
     
     if item:
         user = callback.from_user
         username = f"@{user.username}" if user.username else f"ID: {user.id}"
         
-        # 1. ОТПРАВЛЯЕМ СИГНАЛ ТЕБЕ (АДМИНУ)
-        admin_msg = (
-            f"🔔 **НОВЫЙ ЗАКАЗ!**\n"
+        # 1. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ ТЕБЕ (АДМИНУ)
+        admin_report = (
+            f"💰 **НОВЫЙ ЗАКАЗ!**\n\n"
             f"👤 Клиент: {username}\n"
             f"📦 Товар: {item['text']}\n"
-            f"💰 Цена: {item['price']}"
+            f"💸 Цена: {item['price']}"
         )
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
+        await bot.send_message(ADMIN_ID, admin_report, parse_mode="Markdown")
         
-        # 2. ОТПРАВЛЯЕМ ССЫЛКУ ПОЛЬЗОВАТЕЛЮ
-        user_msg = (
-            f"✅ Вы выбрали: **{item['text']}**\n\n"
-            f"🔗 Для оплаты перейдите по ссылке:\n{DONATE_URL}\n\n"
-            "После оплаты я (админ) свяжусь с вами!"
+        # 2. ОТПРАВЛЯЕМ ССЫЛКУ ПОЛЬЗОВАТЕЛЮ В ОТВЕТ
+        await callback.message.answer(
+            f"✅ Заказ принят! Чтобы оплатить **{item['text']}**, перейдите по ссылке:\n"
+            f"{DONATE_URL}\n\n"
+            "Админ получил сигнал и свяжется с вами после оплаты."
         )
-        await callback.message.answer(user_msg, parse_mode="Markdown")
-        
-        # Убираем "часики" на кнопке
         await callback.answer()
 
 async def main():
