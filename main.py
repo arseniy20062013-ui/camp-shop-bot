@@ -3,11 +3,16 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-TOKEN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
+# ОСНОВНОЙ БОТ (где кнопки для людей)
+TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
+# БОТ ДЛЯ ЗАКАЗОВ (куда придут уведомления)
+TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
+# ТВОЙ ID
 ADMIN_ID = 7173827114
 DONATE_URL = "https://www.donationalerts.com"
 
-bot = Bot(token=TOKEN)
+bot_main = Bot(token=TOKEN_MAIN)
+bot_orders = Bot(token=TOKEN_ORDERS)
 dp = Dispatcher()
 
 BUTTONS = [
@@ -20,46 +25,38 @@ BUTTONS = [
 def get_keyboard():
     builder = InlineKeyboardBuilder()
     for btn in BUTTONS:
-        # Мы убрали url из кнопки, чтобы бот мог поймать сигнал (callback_data)
-        builder.button(
-            text=f"{btn['text']} ({btn['price']})", 
-            callback_data=f"buy_{btn['type']}"
-        )
+        builder.button(text=f"{btn['text']} ({btn['price']})", callback_data=f"buy_{btn['type']}")
     builder.adjust(1)
     return builder.as_markup()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("👇 Выберите услугу для покупки:", reply_markup=get_keyboard())
+    await message.answer("🛒 **Магазин услуг**\nВыберите товар:", reply_markup=get_keyboard())
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def handle_buy(callback: types.CallbackQuery):
-    click_type = callback.data.replace("buy_", "")
-    item = next((btn for btn in BUTTONS if btn["type"] == click_type), None)
+    item_type = callback.data.replace("buy_", "")
+    item = next((btn for btn in BUTTONS if btn["type"] == item_type), None)
     
     if item:
         user = callback.from_user
         username = f"@{user.username}" if user.username else f"ID: {user.id}"
         
-        # 1. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ ТЕБЕ (АДМИНУ)
-        admin_report = (
-            f"💰 **НОВЫЙ ЗАКАЗ!**\n\n"
-            f"👤 Клиент: {username}\n"
-            f"📦 Товар: {item['text']}\n"
-            f"💸 Цена: {item['price']}"
-        )
-        await bot.send_message(ADMIN_ID, admin_report, parse_mode="Markdown")
+        # ОТПРАВЛЯЕМ В БОТА ДЛЯ ЗАКАЗОВ
+        try:
+            await bot_orders.send_message(
+                ADMIN_ID, 
+                f"💰 **НОВЫЙ ЗАКАЗ!**\n👤 От: {username}\n📦 Товар: {item['text']}\n💸 Цена: {item['price']}"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки в бот-заказы: {e}")
         
-        # 2. ОТПРАВЛЯЕМ ССЫЛКУ ПОЛЬЗОВАТЕЛЮ В ОТВЕТ
-        await callback.message.answer(
-            f"✅ Заказ принят! Чтобы оплатить **{item['text']}**, перейдите по ссылке:\n"
-            f"{DONATE_URL}\n\n"
-            "Админ получил сигнал и свяжется с вами после оплаты."
-        )
+        # ОТВЕТ ПОЛЬЗОВАТЕЛЮ В ОСНОВНОМ БОТЕ
+        await callback.message.answer(f"✅ Для оплаты **{item['text']}** перейди по ссылке:\n{DONATE_URL}")
         await callback.answer()
 
 async def main():
-    await dp.start_polling(bot)
+    await dp.start_polling(bot_main)
 
 if __name__ == "__main__":
     asyncio.run(main())
