@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 
-# --- ДАННЫЕ ---
+# --- НАСТРОЙКИ ---
 TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
 TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
 MY_ID = 7173827114
@@ -22,7 +22,8 @@ class AdminStates(StatesGroup):
 client_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Ролик с рекламой (150 руб)")],
     [KeyboardButton(text="Твой ролик со мной (100 руб)")],
-    [KeyboardButton(text="Сменить голос на стриме, старик (25 руб)")]
+    [KeyboardButton(text="Сменить голос на стриме, старик (25 руб)")],
+    [KeyboardButton(text="Просто поддержать")]
 ], resize_keyboard=True)
 
 admin_kb = ReplyKeyboardMarkup(keyboard=[
@@ -36,7 +37,7 @@ settings_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="⬅️ Назад")]
 ], resize_keyboard=True)
 
-# --- БД ---
+# --- БАЗА ДАННЫХ ---
 conn = sqlite3.connect('shop.db')
 cur = conn.cursor()
 cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT)')
@@ -44,7 +45,7 @@ cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value I
 cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
 conn.commit()
 
-# --- КЛИЕНТСКИЙ БОТ ---
+# --- ЛОГИКА КЛИЕНТСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_MAIN)
 async def client_handler(m: types.Message):
     cur.execute('SELECT value FROM settings WHERE name="active"'); res = cur.fetchone()
@@ -54,14 +55,14 @@ async def client_handler(m: types.Message):
         cur.execute('INSERT OR REPLACE INTO users (id, username) VALUES (?, ?)', (m.from_user.id, m.from_user.username))
         conn.commit()
         await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
-    elif "руб" in m.text:
+    elif any(x in (m.text or "") for x in ["руб", "поддержать"]):
         if active == 0: return await m.answer("❌ Прием заказов временно приостановлен.")
         cur.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"'); conn.commit()
         nsk = datetime.now(pytz.timezone('Asia/Novosibirsk')).strftime('%H:%M:%S')
         await m.answer(f"Оплачивай тут: {DONAT_LINK}\nПосле оплаты я свяжусь с тобой!")
         await order_bot.send_message(MY_ID, f"🎁 ЗАКАЗ: {m.text}\nЮзер: @{m.from_user.username or 'нет'}\nID: {m.from_user.id}\nВремя: {nsk}")
 
-# --- АДМИНСКИЙ БОТ ---
+# --- ЛОГИКА АДМИНСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_ORDERS)
 async def admin_handler(m: types.Message, state: FSMContext):
     if m.from_user.id != MY_ID: return
@@ -80,14 +81,15 @@ async def admin_handler(m: types.Message, state: FSMContext):
         cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
         await m.answer("❌ Продажи закрыты!")
     elif m.text == "📢 Сделать рассылку":
-        await m.answer("Отправь ТЕКСТ или ФОТО с описанием:")
+        await m.answer("Отправь ТЕКСТ или ФОТО с описанием для рассылки:")
         await state.set_state(AdminStates.waiting_for_broadcast)
 
+# Хендлер рассылки (ловит любое сообщение в этом состоянии)
 @dp.message(AdminStates.waiting_for_broadcast)
 async def process_broadcast(m: types.Message, state: FSMContext):
     cur.execute('SELECT id, username FROM users'); users = cur.fetchall()
     success, errors = [], []
-    await m.answer(f"⏳ Рассылаю на {len(users)} чел...")
+    await m.answer(f"⏳ Начинаю рассылку на {len(users)} пользователей...")
 
     for uid, unm in users:
         try:
@@ -98,14 +100,19 @@ async def process_broadcast(m: types.Message, state: FSMContext):
             success.append(f"✅ @{unm or 'no_nick'} ({uid})")
             await asyncio.sleep(0.05)
         except Exception as e:
-            errors.append(f"❌ @{unm or 'no_nick'} ({uid}) - {type(e).__name__}")
+            errors.append(f"❌ @{unm or 'no_nick'} ({uid}) — {type(e).__name__}")
 
-    report = f"📋 ОТЧЕТ РАССЫЛКИ\n\n🟢 УСПЕШНО:\n" + ("\n".join(success) if success else "—")
-    report += "\n\n🔴 ОШИБКИ:\n" + ("\n".join(errors) if errors else "Нет")
+    # Формируем отчет
+    report = f"📋 **ОТЧЕТ РАССЫЛКИ** ({datetime.now().strftime('%H:%M')})\n\n"
+    report += "**🟢 УСПЕШНО:**\n" + ("\n".join(success) if success else "—")
+    report += "\n\n**🔴 ОШИБКИ:**\n" + ("\n".join(errors) if errors else "Нет")
     
+    # Отправляем отчет частями, если он большой
     for i in range(0, len(report), 4000):
-        await order_bot.send_message(MY_ID, report[i:i+4000])
+        await order_bot.send_message(MY_ID, report[i:i+4000], parse_mode="Markdown")
+    
     await state.clear()
+    await m.answer("✅ Рассылка завершена!", reply_markup=admin_kb)
 
 async def main():
     await dp.start_polling(main_bot, order_bot)
