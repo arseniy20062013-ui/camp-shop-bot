@@ -9,7 +9,7 @@ from datetime import datetime
 TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
 TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
 MY_ID = 7173827114
-DONAT_LINK = "https://www.donationalerts.com"
+DONAT_LINK = "https://www.donationalerts.com/r/normiscp"
 
 main_bot = Bot(token=TOKEN_MAIN)
 order_bot = Bot(token=TOKEN_ORDERS)
@@ -86,3 +86,4 @@ async def client_handler(m: types.Message):
 
 async def main(): await dp.start_polling(main_bot, order_bot)
 if __name__ == "__main__": asyncio.run(main())
+
