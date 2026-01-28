@@ -5,11 +5,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 
-# --- КОНФИГ (ТВОИ ТОКЕНЫ) ---
-TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA" # Бот для клиентов
-TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU" # Бот для админки
+# --- КОНФИГ ---
+TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
+TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
 MY_ID = 7173827114
-DONAT_LINK = "https://www.donationalerts.com"
+DONAT_LINK = "https://www.donationalerts.com/r/normiscp"
 
 main_bot = Bot(token=TOKEN_MAIN)
 order_bot = Bot(token=TOKEN_ORDERS)
@@ -18,7 +18,7 @@ dp = Dispatcher()
 class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
 
-# --- КНОПКИ КЛИЕНТА ---
+# --- КЛАВИАТУРЫ ---
 client_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Ролик с рекламой (150 руб)")],
     [KeyboardButton(text="Твой ролик со мной (100 руб)")],
@@ -26,7 +26,6 @@ client_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Просто поддержать")]
 ], resize_keyboard=True)
 
-# --- КНОПКИ АДМИНА ---
 admin_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📈 Статистика")],
     [KeyboardButton(text="⚙️ Управление")]
@@ -46,17 +45,15 @@ cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value I
 cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
 conn.commit()
 
-# --- ЛОГИКА АДМИНСКОГО БОТА ---
+# --- АДМИНКА (БОТ ЗАКАЗОВ) ---
 @dp.message(F.bot.token == TOKEN_ORDERS)
 async def admin_handler(m: types.Message, state: FSMContext):
     if m.from_user.id != MY_ID: return
     
-    # Если мы в режиме рассылки
     if await state.get_state() == AdminStates.waiting_for_broadcast:
         cur.execute('SELECT id, username FROM users'); users = cur.fetchall()
         success, errors = [], []
-        await m.answer(f"⏳ Рассылка на {len(users)} чел. пошла...")
-        
+        await m.answer(f"⏳ Рассылка на {len(users)} чел. запущена...")
         for uid, unm in users:
             try:
                 if m.photo: await main_bot.send_photo(uid, m.photo[-1].file_id, caption=m.caption)
@@ -64,31 +61,29 @@ async def admin_handler(m: types.Message, state: FSMContext):
                 success.append(f"✅ @{unm or 'скрыт'} ({uid})")
                 await asyncio.sleep(0.05)
             except: errors.append(f"❌ @{unm or 'скрыт'} ({uid})")
-        
-        report = f"📋 ОТЧЕТ:\n\n🟢 УСПЕШНО: {len(success)}\n🔴 ОШИБКИ: {len(errors)}\n\n" + "\n".join(success[:50])
+        report = f"📋 ОТЧЕТ:\n\n🟢 УСПЕШНО: {len(success)}\n🔴 ОШИБКИ: {len(errors)}\n\nСПИСОК:\n" + "\n".join(success[:50])
         for i in range(0, len(report), 4000): await order_bot.send_message(MY_ID, report[i:i+4000])
         await state.clear()
-        return await m.answer("✅ Рассылка завершена!", reply_markup=admin_kb)
+        return await m.answer("✅ Готово!", reply_markup=admin_kb)
 
-    # Обычные команды админа
     if m.text in ["/start", "⬅️ Назад"]:
-        await m.answer("🛠 Админка активирована", reply_markup=admin_kb)
+        await m.answer("🛠 Админка Нормиса", reply_markup=admin_kb)
     elif m.text == "📈 Статистика":
         cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone()[0]
         cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()[0]
         await m.answer(f"📊 Статистика:\n👤 Юзеров: {u}\n📦 Заказов: {o}")
     elif m.text == "⚙️ Управление":
         await m.answer("Настройки:", reply_markup=settings_kb)
-    elif m.text == "✅ Включить продажи":
-        cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
-        await m.answer("✅ Продажи включены")
-    elif m.text == "❌ Выключить продажи":
-        cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
-        await m.answer("❌ Продажи закрыты")
     elif m.text == "📢 Сделать рассылку":
         await m.answer("Пришли текст или фото — оно уйдет всем!"); await state.set_state(AdminStates.waiting_for_broadcast)
+    elif "Включить" in m.text:
+        cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
+        await m.answer("✅ Продажи открыты")
+    elif "Выключить" in m.text:
+        cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
+        await m.answer("❌ Продажи закрыты")
 
-# --- ЛОГИКА КЛИЕНТСКОГО БОТА ---
+# --- КЛИЕНТ (ОСНОВНОЙ БОТ) ---
 @dp.message(F.bot.token == TOKEN_MAIN)
 async def client_handler(m: types.Message):
     cur.execute('SELECT value FROM settings WHERE name="active"'); active = cur.fetchone()[0]
