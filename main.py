@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 
-# --- НАСТРОЙКИ ---
+# --- ДАННЫЕ ---
 TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
 TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
 MY_ID = 7173827114
@@ -37,7 +37,7 @@ settings_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="⬅️ Назад")]
 ], resize_keyboard=True)
 
-# --- БАЗА ДАННЫХ ---
+# --- БД ---
 conn = sqlite3.connect('shop.db')
 cur = conn.cursor()
 cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT)')
@@ -45,74 +45,63 @@ cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value I
 cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
 conn.commit()
 
-# --- ЛОГИКА КЛИЕНТСКОГО БОТА ---
-@dp.message(F.bot.token == TOKEN_MAIN)
-async def client_handler(m: types.Message):
-    cur.execute('SELECT value FROM settings WHERE name="active"'); res = cur.fetchone()
-    active = res[0] if res else 1
-    
-    if m.text == "/start":
-        cur.execute('INSERT OR REPLACE INTO users (id, username) VALUES (?, ?)', (m.from_user.id, m.from_user.username))
-        conn.commit()
-        await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
-    elif any(x in (m.text or "") for x in ["руб", "поддержать"]):
-        if active == 0: return await m.answer("❌ Прием заказов временно приостановлен.")
-        cur.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"'); conn.commit()
-        nsk = datetime.now(pytz.timezone('Asia/Novosibirsk')).strftime('%H:%M:%S')
-        await m.answer(f"Оплачивай тут: {DONAT_LINK}\nПосле оплаты я свяжусь с тобой!")
-        await order_bot.send_message(MY_ID, f"🎁 ЗАКАЗ: {m.text}\nЮзер: @{m.from_user.username or 'нет'}\nID: {m.from_user.id}\nВремя: {nsk}")
-
-# --- ЛОГИКА АДМИНСКОГО БОТА ---
+# --- ОБРАБОТКА АДМИНСКОГО БОТА (TOKEN_ORDERS) ---
 @dp.message(F.bot.token == TOKEN_ORDERS)
-async def admin_handler(m: types.Message, state: FSMContext):
+async def admin_main(m: types.Message, state: FSMContext):
     if m.from_user.id != MY_ID: return
+    
+    current_state = await state.get_state()
+    if current_state == AdminStates.waiting_for_broadcast:
+        users_cur = conn.execute('SELECT id, username FROM users').fetchall()
+        success, errors = [], []
+        await m.answer(f"⏳ Рассылка на {len(users_cur)} чел...")
+        
+        for uid, unm in users_cur:
+            try:
+                if m.photo:
+                    await main_bot.send_photo(uid, m.photo[-1].file_id, caption=m.caption)
+                else:
+                    await main_bot.send_message(uid, m.text)
+                success.append(f"✅ @{unm or 'no_nick'} ({uid})")
+            except Exception as e:
+                errors.append(f"❌ @{unm or 'no_nick'} ({uid}) - {type(e).__name__}")
+        
+        report = f"📋 ОТЧЕТ:\n\n🟢 УСПЕШНО:\n" + "\n".join(success) + "\n\n🔴 ОШИБКИ:\n" + "\n".join(errors)
+        for i in range(0, len(report), 4000):
+            await order_bot.send_message(MY_ID, report[i:i+4000])
+        await state.clear()
+        return await m.answer("✅ Готово!", reply_markup=admin_kb)
+
     if m.text in ["/start", "⬅️ Назад"]:
-        await m.answer("🛠 Панель админа активирована", reply_markup=admin_kb)
+        await m.answer("🛠 Админка Нормиса", reply_markup=admin_kb)
     elif m.text == "📈 Статистика":
-        cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone()[0]
-        cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()[0]
-        await m.answer(f"📊 Статистика:\n👤 Юзеров: {u}\n📦 Заказов: {o}")
+        u = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        o = conn.execute('SELECT value FROM settings WHERE name="total_orders"').fetchone()[0]
+        await m.answer(f"📊 Юзеров: {u}\n📦 Заказов: {o}")
     elif m.text == "⚙️ Управление":
         await m.answer("Настройки:", reply_markup=settings_kb)
     elif m.text == "✅ Включить продажи":
-        cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
-        await m.answer("✅ Продажи включены!")
+        conn.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
+        await m.answer("✅ Включено")
     elif m.text == "❌ Выключить продажи":
-        cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
-        await m.answer("❌ Продажи закрыты!")
+        conn.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
+        await m.answer("❌ Выключено")
     elif m.text == "📢 Сделать рассылку":
-        await m.answer("Отправь ТЕКСТ или ФОТО с описанием для рассылки:")
+        await m.answer("Пришли текст или фото:")
         await state.set_state(AdminStates.waiting_for_broadcast)
 
-# Хендлер рассылки (ловит любое сообщение в этом состоянии)
-@dp.message(AdminStates.waiting_for_broadcast)
-async def process_broadcast(m: types.Message, state: FSMContext):
-    cur.execute('SELECT id, username FROM users'); users = cur.fetchall()
-    success, errors = [], []
-    await m.answer(f"⏳ Начинаю рассылку на {len(users)} пользователей...")
-
-    for uid, unm in users:
-        try:
-            if m.photo:
-                await main_bot.send_photo(uid, m.photo[-1].file_id, caption=m.caption)
-            else:
-                await main_bot.send_message(uid, m.text)
-            success.append(f"✅ @{unm or 'no_nick'} ({uid})")
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            errors.append(f"❌ @{unm or 'no_nick'} ({uid}) — {type(e).__name__}")
-
-    # Формируем отчет
-    report = f"📋 **ОТЧЕТ РАССЫЛКИ** ({datetime.now().strftime('%H:%M')})\n\n"
-    report += "**🟢 УСПЕШНО:**\n" + ("\n".join(success) if success else "—")
-    report += "\n\n**🔴 ОШИБКИ:**\n" + ("\n".join(errors) if errors else "Нет")
-    
-    # Отправляем отчет частями, если он большой
-    for i in range(0, len(report), 4000):
-        await order_bot.send_message(MY_ID, report[i:i+4000], parse_mode="Markdown")
-    
-    await state.clear()
-    await m.answer("✅ Рассылка завершена!", reply_markup=admin_kb)
+# --- ОБРАБОТКА КЛИЕНТСКОГО БОТА (TOKEN_MAIN) ---
+@dp.message(F.bot.token == TOKEN_MAIN)
+async def client_main(m: types.Message):
+    active = conn.execute('SELECT value FROM settings WHERE name="active"').fetchone()[0]
+    if m.text == "/start":
+        conn.execute('INSERT OR REPLACE INTO users VALUES (?, ?)', (m.from_user.id, m.from_user.username)); conn.commit()
+        await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
+    elif any(x in (m.text or "") for x in ["руб", "поддержать"]):
+        if not active: return await m.answer("❌ Продажи закрыты")
+        conn.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"'); conn.commit()
+        await m.answer(f"Оплачивай тут: {DONAT_LINK}")
+        await order_bot.send_message(MY_ID, f"🎁 ЗАКАЗ: {m.text}\nЮзер: @{m.from_user.username}")
 
 async def main():
     await dp.start_polling(main_bot, order_bot)
