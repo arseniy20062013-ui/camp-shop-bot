@@ -44,64 +44,57 @@ cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value I
 cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
 conn.commit()
 
-# --- ЛОГИКА КЛИЕНТА (ОСНОВНОЙ БОТ) ---
+# --- ЛОГИКА КЛИЕНТСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_MAIN)
 async def client_handler(m: types.Message):
     cur.execute('SELECT value FROM settings WHERE name="active"')
-    is_active = cur.fetchone()[0]
+    active = cur.fetchone()[0]
     
     if m.text == "/start":
         cur.execute('INSERT OR IGNORE INTO users VALUES (?)', (m.from_user.id,))
         conn.commit()
         await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
-    
     elif "руб" in m.text:
-        if not is_active:
-            return await m.answer("Прием заказов временно приостановлен.")
+        if active == 0:
+            return await m.answer("❌ Прием заказов временно приостановлен.")
         
         cur.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"')
         conn.commit()
         
-        nsk = datetime.now(pytz.timezone('Asia/Novosibirsk')).strftime('%H:%M:%S %d.%m.%Y')
-        info = f"🎁 НОВЫЙ ЗАКАЗ!\n🛒 Товар: {m.text}\n👤 Юзер: @{m.from_user.username or 'скрыт'}\n🆔 ID: {m.from_user.id}\n⏰ Время: {nsk}"
-        
-        await m.answer(f"Для оплаты перейдите по ссылке:\n{DONAT_LINK}\n\nПосле оплаты я свяжусь с тобой!")
-        await order_bot.send_message(MY_ID, info)
+        nsk = datetime.now(pytz.timezone('Asia/Novosibirsk')).strftime('%H:%M:%S')
+        await m.answer(f"Оплачивай тут: {DONAT_LINK}\nПосле оплаты я свяжусь с тобой!")
+        await order_bot.send_message(MY_ID, f"🎁 ЗАКАЗ: {m.text}\nЮзер: @{m.from_user.username or 'скрыт'}\nID: {m.from_user.id}\nВремя: {nsk}")
 
-# --- ЛОГИКА АДМИНА (БОТ ЗАКАЗОВ) ---
+# --- ЛОГИКА АДМИНСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_ORDERS)
 async def admin_handler(m: types.Message, state: FSMContext):
     if m.from_user.id != MY_ID: return
     
-    if m.text == "/start" or m.text == "⬅️ Назад":
-        await m.answer("Панель админа активирована. Выберите действие:", reply_markup=admin_kb)
+    if m.text in ["/start", "⬅️ Назад"]:
+        await m.answer("🛠 Панель управления активирована", reply_markup=admin_kb)
     
     elif m.text == "📈 Статистика":
         cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone()[0]
         cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()[0]
-        await m.answer(f"📊 Статистика:\n👤 Юзеров: {u}\n📦 Заказов: {o}")
+        await m.answer(f"📊 Статистика:\n👤 Пользователей: {u}\n📦 Заказов: {o}")
     
     elif m.text == "⚙️ Управление":
-        await m.answer("Настройки магазина:", reply_markup=settings_kb)
+        await m.answer("Выберите действие в настройках:", reply_markup=settings_kb)
     
     elif m.text == "✅ Включить продажи":
         cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
-        await m.answer("✅ Продажи включены! Пользователи могут делать заказы.")
+        await m.answer("✅ Продажи открыты!")
     
     elif m.text == "❌ Выключить продажи":
         cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
-        await m.answer("❌ Продажи выключены! Пользователи увидят уведомление о паузе.")
+        await m.answer("❌ Продажи закрыты!")
     
     elif m.text == "📢 Сделать рассылку":
-        await m.answer("Введите текст сообщения для рассылки (или напишите 'Отмена'):")
+        await m.answer("Напишите текст сообщения для рассылки всем пользователям:")
         await state.set_state(AdminStates.waiting_for_broadcast)
 
 @dp.message(AdminStates.waiting_for_broadcast)
-async def process_broadcast(m: types.Message, state: FSMContext):
-    if m.text.lower() == "отмена":
-        await state.clear()
-        return await m.answer("Рассылка отменена.", reply_markup=admin_kb)
-    
+async def broadcast_logic(m: types.Message, state: FSMContext):
     cur.execute('SELECT id FROM users'); users = cur.fetchall()
     count = 0
     for u in users:
@@ -110,12 +103,10 @@ async def process_broadcast(m: types.Message, state: FSMContext):
             count += 1
             await asyncio.sleep(0.05)
         except: pass
-    
-    await m.answer(f"📢 Рассылка завершена!\n✅ Отправлено: {count} пользователям.", reply_markup=admin_kb)
+    await m.answer(f"✅ Рассылка завершена!\nОтправлено: {count} пользователям.", reply_markup=admin_kb)
     await state.clear()
 
 async def main():
-    print("Бот запущен...")
     await dp.start_polling(main_bot, order_bot)
 
 if __name__ == "__main__":
