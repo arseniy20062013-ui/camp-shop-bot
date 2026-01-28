@@ -9,7 +9,7 @@ from datetime import datetime
 TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
 TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
 MY_ID = 7173827114
-DONAT_LINK = "https://www.donationalerts.com"
+DONAT_LINK = "https://www.donationalerts.com/r/normiscp"
 
 main_bot = Bot(token=TOKEN_MAIN)
 order_bot = Bot(token=TOKEN_ORDERS)
@@ -23,7 +23,7 @@ client_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Ролик с рекламой (150 руб)")],
     [KeyboardButton(text="Твой ролик со мной (100 руб)")],
     [KeyboardButton(text="Сменить голос на стриме, старик (25 руб)")],
-    [KeyboardButton(text="Просто поддержать"), KeyboardButton(text="Новости")] # ДОБАВИЛ НОВОСТИ
+    [KeyboardButton(text="Просто поддержать")] # КНОПКА НОВОСТИ УДАЛЕНА
 ], resize_keyboard=True)
 
 admin_kb = ReplyKeyboardMarkup(keyboard=[
@@ -45,7 +45,7 @@ cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value I
 cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
 conn.commit()
 
-# --- ОБРАБОТКА АДМИНСКОГО БОТА (TOKEN_ORDERS) ---
+# --- ОБРАБОТКА АДМИНСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_ORDERS)
 async def admin_main(m: types.Message, state: FSMContext):
     if m.from_user.id != MY_ID: return
@@ -68,7 +68,6 @@ async def admin_main(m: types.Message, state: FSMContext):
                 errors.append(f"❌ @{unm or 'no_nick'} ({uid}) - {type(e).__name__}")
         
         report = f"📋 ОТЧЕТ ПО РАССЫЛКЕ:\n\n🟢 УСПЕШНО ({len(success)}):\n" + "\n".join(success[:50])
-        if len(success) > 50: report += "\n...и другие"
         report += f"\n\n🔴 ОШИБКИ ({len(errors)}):\n" + "\n".join(errors[:50])
         
         for i in range(0, len(report), 4000):
@@ -79,34 +78,30 @@ async def admin_main(m: types.Message, state: FSMContext):
     if m.text in ["/start", "⬅️ Назад"]:
         await m.answer("🛠 Админка Нормиса", reply_markup=admin_kb)
     elif m.text == "📈 Статистика":
-        cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone()[0]
-        cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()[0]
-        await m.answer(f"📊 Статистика:\n👤 Юзеров в базе: {u}\n📦 Заказов: {o}")
+        cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone()
+        cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()
+        await m.answer(f"📊 Статистика:\n👤 Юзеров: {u[0]}\n📦 Заказов: {o[0]}")
     elif m.text == "⚙️ Управление":
         await m.answer("Настройки:", reply_markup=settings_kb)
+    elif m.text == "📢 Сделать рассылку":
+        await m.answer("Пришли текст или фото для рассылки:")
+        await state.set_state(AdminStates.waiting_for_broadcast)
+    # Остальные функции (вкл/выкл продаж) остаются...
     elif m.text == "✅ Включить продажи":
         cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit()
         await m.answer("✅ Продажи открыты")
     elif m.text == "❌ Выключить продажи":
         cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit()
         await m.answer("❌ Продажи закрыты")
-    elif m.text == "📢 Сделать рассылку":
-        await m.answer("Пришли текст или фото для рассылки всем юзерам:")
-        await state.set_state(AdminStates.waiting_for_broadcast)
 
-# --- ОБРАБОТКА КЛИЕНТСКОГО БОТА (TOKEN_MAIN) ---
+# --- ОБРАБОТКА КЛИЕНТСКОГО БОТА ---
 @dp.message(F.bot.token == TOKEN_MAIN)
 async def client_main(m: types.Message):
     cur.execute('SELECT value FROM settings WHERE name="active"'); is_active = cur.fetchone()[0]
-    
     if m.text == "/start":
         cur.execute('INSERT OR REPLACE INTO users (id, username) VALUES (?, ?)', (m.from_user.id, m.from_user.username))
         conn.commit()
         await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
-    
-    elif m.text == "Новости":
-        await m.answer("🔔 Здесь будут самые свежие новости Нормиса! Следи за рассылкой.")
-    
     elif any(x in (m.text or "") for x in ["руб", "поддержать"]):
         if not is_active: return await m.answer("❌ Продажи временно закрыты.")
         cur.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"'); conn.commit()
