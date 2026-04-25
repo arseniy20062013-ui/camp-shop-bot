@@ -1,89 +1,136 @@
-import asyncio, pytz, sqlite3
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from datetime import datetime
+import os
+import requests
+import base64
+import subprocess
+from io import BytesIO
+from PIL import Image
 
-# --- КОНФИГ ---
-TOKEN_MAIN = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
-TOKEN_ORDERS = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
-MY_ID = 7173827114
-DONAT_LINK = "https://www.donationalerts.com/r/normiscp"
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-main_bot = Bot(token=TOKEN_MAIN)
-order_bot = Bot(token=TOKEN_ORDERS)
-dp = Dispatcher()
+BOT_TOKEN = "ТВОЙ_ТОКЕН"
 
-class AdminStates(StatesGroup):
-    waiting_for_broadcast = State()
+# ===== ЛОКАЛЬНЫЕ СЕРВИСЫ =====
+SD_URL = "http://127.0.0.1:7860/sdapi/v1/txt2img"
+OLLAMA_URL = "http://localhost:11434/api/generate"
 
-# --- КНОПКИ ---
-client_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="Ролик с рекламой (150 руб)")],
-    [KeyboardButton(text="Твой ролик со мной (100 руб)")],
-    [KeyboardButton(text="Сменить голос на стриме, старик (25 руб)")],
-    [KeyboardButton(text="Просто поддержать")]
-], resize_keyboard=True)
+# ===== START =====
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 LUUM LOCAL\n\n"
+        "/photo\n"
+        "/video\n"
+        "/doc\n"
+        "Просто пиши для общения"
+    )
 
-admin_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="📈 Статистика")], [KeyboardButton(text="⚙️ Управление")]
-], resize_keyboard=True)
+# ===== ЧАТ (СВОЯ ИИ) =====
+def ask_llm(prompt):
+    r = requests.post(OLLAMA_URL, json={
+        "model": "llama3",
+        "prompt": prompt,
+        "stream": False
+    })
+    return r.json()["response"]
 
-settings_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="✅ Включить продажи"), KeyboardButton(text="❌ Выключить продажи")],
-    [KeyboardButton(text="📢 Сделать рассылку")], [KeyboardButton(text="⬅️ Назад")]
-], resize_keyboard=True)
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧠 Думаю...")
 
-# --- БД ---
-conn = sqlite3.connect('shop.db', check_same_thread=False)
-cur = conn.cursor()
-cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT)')
-cur.execute('CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value INTEGER)')
-cur.execute('INSERT OR IGNORE INTO settings VALUES ("total_orders", 0), ("active", 1)')
-conn.commit()
+    answer = ask_llm(update.message.text)
 
-# --- АДМИНКА ---
-@dp.message(F.bot.token == TOKEN_ORDERS)
-async def admin_handler(m: types.Message, state: FSMContext):
-    if m.from_user.id != MY_ID: return
-    if await state.get_state() == AdminStates.waiting_for_broadcast:
-        cur.execute('SELECT id, username FROM users'); users = cur.fetchall()
-        success, errors = [], []
-        await m.answer(f"⏳ Рассылка на {len(users)} чел. запущена...")
-        for uid, unm in users:
-            try:
-                if m.photo: await main_bot.send_photo(uid, m.photo[-1].file_id, caption=m.caption)
-                else: await main_bot.send_message(uid, m.text)
-                success.append(f"✅ @{unm or 'no_nick'} ({uid})")
-                await asyncio.sleep(0.05)
-            except: errors.append(f"❌ @{unm or 'no_nick'} ({uid})")
-        report = f"📋 ОТЧЕТ:\n\n🟢 УСПЕШНО: {len(success)}\n🔴 ОШИБКИ: {len(errors)}\n\n" + "\n".join(success[:50])
-        for i in range(0, len(report), 4000): await order_bot.send_message(MY_ID, report[i:i+4000])
-        await state.clear(); return await m.answer("✅ Готово!", reply_markup=admin_kb)
-    if m.text in ["/start", "⬅️ Назад"]: await m.answer("🛠 Админка Нормиса", reply_markup=admin_kb)
-    elif m.text == "📈 Статистика":
-        cur.execute('SELECT COUNT(*) FROM users'); u = cur.fetchone(); cur.execute('SELECT value FROM settings WHERE name="total_orders"'); o = cur.fetchone()
-        await m.answer(f"📊 Статистика:\n👤 Юзеров: {u[0]}\n📦 Заказов: {o[0]}")
-    elif m.text == "⚙️ Управление": await m.answer("Настройки:", reply_markup=settings_kb)
-    elif m.text == "📢 Сделать рассылку": await m.answer("Пришли пост для рассылки!"); await state.set_state(AdminStates.waiting_for_broadcast)
-    elif "Включить" in m.text: cur.execute('UPDATE settings SET value = 1 WHERE name="active"'); conn.commit(); await m.answer("✅ Включено")
-    elif "Выключить" in m.text: cur.execute('UPDATE settings SET value = 0 WHERE name="active"'); conn.commit(); await m.answer("❌ Выключено")
+    await update.message.reply_text(answer)
 
-# --- КЛИЕНТ ---
-@dp.message(F.bot.token == TOKEN_MAIN)
-async def client_handler(m: types.Message):
-    cur.execute('SELECT value FROM settings WHERE name="active"'); active = cur.fetchone()[0]
-    if m.text == "/start":
-        cur.execute('INSERT OR REPLACE INTO users VALUES (?, ?)', (m.from_user.id, m.from_user.username)); conn.commit()
-        await m.answer("Привет! Это бот с реквизитами Нормиса, выбирай:", reply_markup=client_kb)
-    elif any(x in (m.text or "") for x in ["руб", "поддержать"]):
-        if not active: return await m.answer("❌ Прием заказов временно приостановлен.")
-        cur.execute('UPDATE settings SET value = value + 1 WHERE name="total_orders"'); conn.commit()
-        # ТЕКСТ ОБНОВЛЕН (УБРАНО "СВЯЖУСЬ С ТОБОЙ")
-        await m.answer(f"Оплачивай тут: {DONAT_LINK}")
-        await order_bot.send_message(MY_ID, f"🎁 ЗАКАЗ: {m.text}\nЮзер: @{m.from_user.username or 'нет'}")
+# ===== ФОТО =====
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args)
 
-async def main(): await dp.start_polling(main_bot, order_bot)
-if __name__ == "__main__": asyncio.run(main())
+    if not prompt:
+        await update.message.reply_text("Напиши промпт")
+        return
 
+    payload = {
+        "prompt": prompt,
+        "width": 1280,
+        "height": 720,
+        "steps": 20
+    }
+
+    r = requests.post(SD_URL, json=payload)
+    result = r.json()
+
+    img_data = base64.b64decode(result['images'][0])
+
+    with open("img.png", "wb") as f:
+        f.write(img_data)
+
+    await update.message.reply_photo(photo=open("img.png", "rb"))
+
+    os.remove("img.png")
+
+# ===== ВИДЕО =====
+async def video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args)
+
+    await update.message.reply_text("🎬 Генерация (долго)...")
+
+    frames = 30
+
+    for i in range(frames):
+        payload = {
+            "prompt": f"{prompt}, frame {i}",
+            "width": 1280,
+            "height": 720,
+            "steps": 15
+        }
+
+        r = requests.post(SD_URL, json=payload)
+        result = r.json()
+
+        img_data = base64.b64decode(result['images'][0])
+
+        with open(f"frame_{i}.png", "wb") as f:
+            f.write(img_data)
+
+    subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-framerate", "3",
+        "-i", "frame_%d.png",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "video.mp4"
+    ])
+
+    await update.message.reply_video(video=open("video.mp4", "rb"))
+
+    for i in range(frames):
+        os.remove(f"frame_{i}.png")
+    os.remove("video.mp4")
+
+# ===== DOC =====
+async def doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args) or "LUUM DOC"
+
+    with open("doc.txt", "w", encoding="utf-8") as f:
+        f.write(text)
+
+    await update.message.reply_document(open("doc.txt", "rb"))
+
+    os.remove("doc.txt")
+
+# ===== MAIN =====
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("photo", photo))
+    app.add_handler(CommandHandler("video", video))
+    app.add_handler(CommandHandler("doc", doc))
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    print("🚀 LUUM LOCAL STARTED")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
