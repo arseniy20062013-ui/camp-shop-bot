@@ -19,10 +19,9 @@ def init_db():
     # Таблица заказов (статистика нажатий на товары)
     cursor.execute('CREATE TABLE IF NOT EXISTS orders (item_name TEXT, count INTEGER DEFAULT 0)')
     
+    # Обновленный список товаров
     items = [
         "Ролик с рекламой (150 руб)", 
-        "Твой ролик со мной (100 руб)", 
-        "Сменить голос на стриме, старик (25 руб)", 
         "Просто поддержать"
     ]
     for item in items:
@@ -68,8 +67,6 @@ dp_ctrl = Dispatcher()
 def get_main_kb():
     builder = ReplyKeyboardBuilder()
     builder.row(types.KeyboardButton(text="Ролик с рекламой (150 руб)"))
-    builder.row(types.KeyboardButton(text="Твой ролик со мной (100 руб)"))
-    builder.row(types.KeyboardButton(text="Сменить голос на стриме, старик (25 руб)"))
     builder.row(types.KeyboardButton(text="Просто поддержать"))
     return builder.as_markup(resize_keyboard=True)
 
@@ -85,23 +82,23 @@ def get_admin_kb():
 async def rekv_start(message: types.Message):
     add_user(message.from_user.id)
     await message.answer(
-        "Привет! Это бот с реквизитами Нормиса, выбирай:", 
-        reply_markup=get_main_kb()
+        "Привет! Это бот с реквизитами Нормиса, выбирай:\n\n"
+        "⚠️ **ВАЖНО: При оплате обязательно указывай свой тег (username) в Telegram, чтобы я мог с тобой связаться!**", 
+        reply_markup=get_main_kb(),
+        parse_mode="Markdown"
     )
 
 @dp_rekv.message()
 async def handle_orders(message: types.Message):
     global sales_active
     
-    # Список наших товаров
+    # Обновленный список товаров
     items = [
         "Ролик с рекламой (150 руб)", 
-        "Твой ролик со мной (100 руб)", 
-        "Сменить голос на стриме, старик (25 руб)", 
         "Просто поддержать"
     ]
     
-    # Если юзер написал что-то левое, игнорируем или просим нажать кнопку
+    # Если юзер написал что-то левое, игнорируем
     if message.text not in items:
         return
 
@@ -110,8 +107,8 @@ async def handle_orders(message: types.Message):
         await message.answer("❌ Прием заказов временно приостановлен.")
         return
     
-    # Раз продажи работают и нажата нужная кнопка:
-    log_order(message.text) # Записываем в статистику
+    # Логируем нажатие в статистику
+    log_order(message.text)
     
     # Собираем инфу о юзере для уведомления
     user = message.from_user
@@ -119,7 +116,7 @@ async def handle_orders(message: types.Message):
     
     # Отправляем уведомление в БОТ УПРАВЛЕНИЯ админу
     info = (
-        f"🛒 **Новое нажатие на товар!**\n"
+        f"🛒 **Новое нажатие!**\n"
         f"👤 Юзер: {username} (ID: `{user.id}`)\n"
         f"📦 Выбрано: **{message.text}**"
     )
@@ -147,9 +144,11 @@ async def ctrl_start(message: types.Message):
 async def show_stats(message: types.Message):
     if message.from_user.id == ADMIN_ID:
         total_users, orders = get_stats()
-        msg = f"📈 **Онлайн Трафик:**\n\nВсего уникальных людей заходило: **{total_users}**\n\n**Запросы по товарам:**\n"
+        msg = f"📈 **Онлайн Трафик:**\n\nВсего уникальных людей заходило: **{total_users}**\n\n**Запросы по кнопкам:**\n"
         for name, count in orders:
-            msg += f"▪️ {name}: {count} раз(а)\n"
+            # Скрываем старые товары из статы, если они остались в базе, чтобы не мозолили глаза
+            if name in ["Ролик с рекламой (150 руб)", "Просто поддержать"]:
+                msg += f"▪️ {name}: {count} раз(а)\n"
         await message.answer(msg, parse_mode="Markdown")
 
 @dp_ctrl.message(F.text.in_(["🔴 Выключить продажи", "🟢 Включить продажи"]))
@@ -166,7 +165,6 @@ async def toggle_logic(message: types.Message):
 # ================= ЗАПУСК =================
 async def main():
     print("Боты успешно запущены...")
-    # Запускаем обоих ботов асинхронно
     await asyncio.gather(
         dp_rekv.start_polling(bot_rekv), 
         dp_ctrl.start_polling(bot_ctrl)
