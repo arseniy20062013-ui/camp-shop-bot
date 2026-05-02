@@ -1,136 +1,179 @@
-import os
-import requests
-import base64
-import subprocess
-from io import BytesIO
-from PIL import Image
+import asyncio
+import sqlite3
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+# ================= КОНФИГ =================
+TOKEN_REKVIZITI = "8423667056:AAFxOF1jkteghG6PSK3vccwuI54xlbPmmjA"
+TOKEN_CONTROL = "8495993622:AAFZMy4dedK8DE0qMD3siNSvulqj78qDyzU"
+ADMIN_ID = 7173827114
+DONATION_LINK = "https://www.donationalerts.com/r/normiscp"
 
-BOT_TOKEN = "ТВОЙ_ТОКЕН"
+# ================= БАЗА ДАННЫХ =================
+def init_db():
+    conn = sqlite3.connect('stats.db')
+    cursor = conn.cursor()
+    # Таблица пользователей (для уникального трафика)
+    cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)')
+    # Таблица заказов (статистика нажатий на товары)
+    cursor.execute('CREATE TABLE IF NOT EXISTS orders (item_name TEXT, count INTEGER DEFAULT 0)')
+    
+    items = [
+        "Ролик с рекламой (150 руб)", 
+        "Твой ролик со мной (100 руб)", 
+        "Сменить голос на стриме, старик (25 руб)", 
+        "Просто поддержать"
+    ]
+    for item in items:
+        cursor.execute('INSERT OR IGNORE INTO orders (item_name, count) VALUES (?, 0)', (item,))
+    
+    conn.commit()
+    conn.close()
 
-# ===== ЛОКАЛЬНЫЕ СЕРВИСЫ =====
-SD_URL = "http://127.0.0.1:7860/sdapi/v1/txt2img"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+def add_user(user_id):
+    conn = sqlite3.connect('stats.db')
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
+    conn.commit()
+    conn.close()
 
-# ===== START =====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 LUUM LOCAL\n\n"
-        "/photo\n"
-        "/video\n"
-        "/doc\n"
-        "Просто пиши для общения"
+def log_order(item_name):
+    conn = sqlite3.connect('stats.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE orders SET count = count + 1 WHERE item_name = ?', (item_name,))
+    conn.commit()
+    conn.close()
+
+def get_stats():
+    conn = sqlite3.connect('stats.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT item_name, count FROM orders')
+    orders = cursor.fetchall()
+    conn.close()
+    return total_users, orders
+
+# ================= ИНИЦИАЛИЗАЦИЯ =================
+init_db()
+sales_active = True # По умолчанию продажи включены
+
+bot_rekv = Bot(token=TOKEN_REKVIZITI)
+bot_ctrl = Bot(token=TOKEN_CONTROL)
+dp_rekv = Dispatcher()
+dp_ctrl = Dispatcher()
+
+# ================= КЛАВИАТУРЫ =================
+def get_main_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.row(types.KeyboardButton(text="Ролик с рекламой (150 руб)"))
+    builder.row(types.KeyboardButton(text="Твой ролик со мной (100 руб)"))
+    builder.row(types.KeyboardButton(text="Сменить голос на стриме, старик (25 руб)"))
+    builder.row(types.KeyboardButton(text="Просто поддержать"))
+    return builder.as_markup(resize_keyboard=True)
+
+def get_admin_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.row(types.KeyboardButton(text="📊 Статистика трафика"))
+    status_text = "🔴 Выключить продажи" if sales_active else "🟢 Включить продажи"
+    builder.row(types.KeyboardButton(text=status_text))
+    return builder.as_markup(resize_keyboard=True)
+
+# ================= ЛОГИКА: БОТ РЕКВИЗИТОВ =================
+@dp_rekv.message(Command("start"))
+async def rekv_start(message: types.Message):
+    add_user(message.from_user.id)
+    await message.answer(
+        "Привет! Это бот с реквизитами Нормиса, выбирай:", 
+        reply_markup=get_main_kb()
     )
 
-# ===== ЧАТ (СВОЯ ИИ) =====
-def ask_llm(prompt):
-    r = requests.post(OLLAMA_URL, json={
-        "model": "llama3",
-        "prompt": prompt,
-        "stream": False
-    })
-    return r.json()["response"]
-
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧠 Думаю...")
-
-    answer = ask_llm(update.message.text)
-
-    await update.message.reply_text(answer)
-
-# ===== ФОТО =====
-async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = " ".join(context.args)
-
-    if not prompt:
-        await update.message.reply_text("Напиши промпт")
+@dp_rekv.message()
+async def handle_orders(message: types.Message):
+    global sales_active
+    
+    # Список наших товаров
+    items = [
+        "Ролик с рекламой (150 руб)", 
+        "Твой ролик со мной (100 руб)", 
+        "Сменить голос на стриме, старик (25 руб)", 
+        "Просто поддержать"
+    ]
+    
+    # Если юзер написал что-то левое, игнорируем или просим нажать кнопку
+    if message.text not in items:
         return
 
-    payload = {
-        "prompt": prompt,
-        "width": 1280,
-        "height": 720,
-        "steps": 20
-    }
+    # Проверка включены ли продажи
+    if not sales_active:
+        await message.answer("❌ Прием заказов временно приостановлен.")
+        return
+    
+    # Раз продажи работают и нажата нужная кнопка:
+    log_order(message.text) # Записываем в статистику
+    
+    # Собираем инфу о юзере для уведомления
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "Скрыт/Нет юзернейма"
+    
+    # Отправляем уведомление в БОТ УПРАВЛЕНИЯ админу
+    info = (
+        f"🛒 **Новое нажатие на товар!**\n"
+        f"👤 Юзер: {username} (ID: `{user.id}`)\n"
+        f"📦 Выбрано: **{message.text}**"
+    )
+    try:
+        await bot_ctrl.send_message(ADMIN_ID, info, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Не удалось отправить уведомление админу: {e}")
+    
+    # Отвечаем юзеру ссылкой на оплату
+    await message.answer(
+        f"Оплачивай тут: {DONATION_LINK}\n\nВыбранная услуга: {message.text}",
+        disable_web_page_preview=False
+    )
 
-    r = requests.post(SD_URL, json=payload)
-    result = r.json()
+# ================= ЛОГИКА: БОТ УПРАВЛЕНИЯ =================
+@dp_ctrl.message(Command("start"))
+async def ctrl_start(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        await message.answer(
+            "Панель управления доступом и трафиком:", 
+            reply_markup=get_admin_kb()
+        )
 
-    img_data = base64.b64decode(result['images'][0])
+@dp_ctrl.message(F.text == "📊 Статистика трафика")
+async def show_stats(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        total_users, orders = get_stats()
+        msg = f"📈 **Онлайн Трафик:**\n\nВсего уникальных людей заходило: **{total_users}**\n\n**Запросы по товарам:**\n"
+        for name, count in orders:
+            msg += f"▪️ {name}: {count} раз(а)\n"
+        await message.answer(msg, parse_mode="Markdown")
 
-    with open("img.png", "wb") as f:
-        f.write(img_data)
+@dp_ctrl.message(F.text.in_(["🔴 Выключить продажи", "🟢 Включить продажи"]))
+async def toggle_logic(message: types.Message):
+    global sales_active
+    if message.from_user.id == ADMIN_ID:
+        # Инвертируем состояние
+        sales_active = not sales_active
+        status = "ВЫКЛЮЧЕНЫ 🔴" if not sales_active else "ВКЛЮЧЕНЫ 🟢"
+        
+        # Обновляем клавиатуру с новой кнопкой
+        await message.answer(f"Продажи теперь {status}", reply_markup=get_admin_kb())
 
-    await update.message.reply_photo(photo=open("img.png", "rb"))
-
-    os.remove("img.png")
-
-# ===== ВИДЕО =====
-async def video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = " ".join(context.args)
-
-    await update.message.reply_text("🎬 Генерация (долго)...")
-
-    frames = 30
-
-    for i in range(frames):
-        payload = {
-            "prompt": f"{prompt}, frame {i}",
-            "width": 1280,
-            "height": 720,
-            "steps": 15
-        }
-
-        r = requests.post(SD_URL, json=payload)
-        result = r.json()
-
-        img_data = base64.b64decode(result['images'][0])
-
-        with open(f"frame_{i}.png", "wb") as f:
-            f.write(img_data)
-
-    subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-framerate", "3",
-        "-i", "frame_%d.png",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "video.mp4"
-    ])
-
-    await update.message.reply_video(video=open("video.mp4", "rb"))
-
-    for i in range(frames):
-        os.remove(f"frame_{i}.png")
-    os.remove("video.mp4")
-
-# ===== DOC =====
-async def doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args) or "LUUM DOC"
-
-    with open("doc.txt", "w", encoding="utf-8") as f:
-        f.write(text)
-
-    await update.message.reply_document(open("doc.txt", "rb"))
-
-    os.remove("doc.txt")
-
-# ===== MAIN =====
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("photo", photo))
-    app.add_handler(CommandHandler("video", video))
-    app.add_handler(CommandHandler("doc", doc))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
-    print("🚀 LUUM LOCAL STARTED")
-    app.run_polling()
+# ================= ЗАПУСК =================
+async def main():
+    print("Боты успешно запущены...")
+    # Запускаем обоих ботов асинхронно
+    await asyncio.gather(
+        dp_rekv.start_polling(bot_rekv), 
+        dp_ctrl.start_polling(bot_ctrl)
+    )
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Боты выключены вручную.")
